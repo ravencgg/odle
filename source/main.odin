@@ -4,16 +4,23 @@ import "core:fmt"
 import "core:os"
 import "core:intrinsics"
 import "core:math/rand"
+import "core:math"
 import "core:time"
+
 import str "core:strings"
 import sdl "vendor:sdl2"
 import stb "vendor:stb/image"
 
 WORD_LENGTH :: 5
-NUM_GUESSES :: 10
+NUM_GUESSES :: 6
 WINDOW_WIDTH  :: 640
 WINDOW_HEIGHT :: 480
 ALLOW_ANY_GUESS :: false 
+DRAW_STRING_SCALE :: 2
+
+SHAKE_FREQUENCY :: 40
+SHAKE_AMPLITUDE :: 5.0
+SHAKE_DURATION :: 0.5
 
 Font :: struct {
     texture: ^sdl.Texture,
@@ -32,13 +39,19 @@ Guess :: struct {
     letter: [WORD_LENGTH]rune,
     hint: [WORD_LENGTH]Hint,
     len: i32,
+
+    shake_start : f64,
+    shake_amplitude : f64,
 }
 
 word_list : [dynamic]string
 guesses : [NUM_GUESSES]Guess
 num_guesses : i32
 victory : bool
+failure : bool
 answer : string
+dt : f64
+frame_time : f64
 
 fatal_error :: proc(message: string) {
     fmt.println("Fatal Error: ", message)
@@ -68,6 +81,8 @@ draw_string :: proc(renderer: ^sdl.Renderer, font: Font, x, y: i32, s: string) {
     source.h = font.height / font.glyphs_h
 
     dest := source
+    dest.w *= DRAW_STRING_SCALE
+    dest.h *= DRAW_STRING_SCALE
     dest.x = x
     dest.y = y
 
@@ -135,9 +150,14 @@ draw_guess :: proc(renderer: ^sdl.Renderer, font: Font, y: i32, s: Guess) {
 
     SPACING :: 5
     jump := dest.w + SPACING
-    total_width := WORD_LENGTH * dest.w + SPACING * WORD_LENGTH - 1
+    total_width := WORD_LENGTH * dest.w + SPACING * (WORD_LENGTH - 1)
 
-    dest.x = WINDOW_WIDTH / 2 - total_width / 2
+    dest.x = (WINDOW_WIDTH / 2) - (total_width / 2)
+    if s.shake_amplitude > 0 {
+        time_offset := frame_time - s.shake_start
+        offset := math.sin(time_offset * SHAKE_FREQUENCY) * s.shake_amplitude
+        dest.x += auto_cast offset
+    }
     dest.y = y
 
     for c, i in s.letter {
@@ -155,6 +175,7 @@ draw_guess :: proc(renderer: ^sdl.Renderer, font: Font, y: i32, s: Guess) {
         dest.x += jump
     }
 }
+
 
 draw_keys :: proc(renderer: ^sdl.Renderer, font: Font, y: i32) {
 
@@ -176,44 +197,49 @@ draw_keys :: proc(renderer: ^sdl.Renderer, font: Font, y: i32) {
         }
     }
 
-    source: sdl.Rect
-    source.w = font.width / font.glyphs_w
-    source.h = font.height / font.glyphs_h
-
-    dest := source
-    dest.w *= 3
-    dest.h *= 3
-
     SPACING :: 5
-    CHARS_PER_LINE :: 10
-    jump := dest.w + SPACING
-    total_width := CHARS_PER_LINE * dest.w + SPACING * CHARS_PER_LINE - 1
-    dest.x = WINDOW_WIDTH / 2 - total_width / 2
-    dest.y = y
 
-    for hint, i in key_hints {
+    rows : []string = { "qwertyuiop", "asdfghjkl", "zxcvbnm" };
 
-        dest_row : i32 = auto_cast i % CHARS_PER_LINE
-        dest.x = WINDOW_WIDTH / 2 - total_width / 2 + jump * dest_row
+    draw_key_row :: proc(renderer: ^sdl.Renderer, font: Font, s: string, hints: []Hint, y: i32) {
 
-        dest_col : i32 = i32(i / CHARS_PER_LINE)
-        dest.y = y + dest_col * (dest.h + SPACING)
+        source: sdl.Rect
+        source.w = font.width / font.glyphs_w
+        source.h = font.height / font.glyphs_h
 
-        c := cast(i32)i + cast(i32)sdl.Keycode.a
-        index : i32 = c - cast(i32)' '
-        row := index / font.glyphs_w
-        col := index % font.glyphs_w
-        source.x = col * source.w
-        source.y = row * source.h
+        dest := source
+        dest.w *= 3
+        dest.h *= 3
 
-        set_fill_color(renderer, hint)
-        sdl.RenderFillRect(renderer, expand(dest, 4, 4))
-        set_border_color(renderer, hint)
-        sdl.RenderDrawRect(renderer, expand(dest, 4, 4))
-        sdl.RenderCopy(renderer, font.texture, &source, &dest)
+        total_width := cast(i32)len(s) * dest.w + SPACING * cast(i32)len(s) - 1
+        dest.x = WINDOW_WIDTH / 2 - total_width / 2
+        dest.y = y
+        jump := dest.w + SPACING
+
+        for c, i in s {
+            hint_index := c - 'a'
+            hint := hints[hint_index]
+
+            dest_col : i32 = auto_cast i % cast(i32)len(s)
+            dest.x = WINDOW_WIDTH / 2 - total_width / 2 + jump * dest_col
+
+            index := c - ' '
+            row := cast(i32)index / font.glyphs_w
+            col := cast(i32)index % font.glyphs_w
+            source.x = col * source.w
+            source.y = row * source.h
+
+            set_fill_color(renderer, hint)
+            sdl.RenderFillRect(renderer, expand(dest, 4, 4))
+            set_border_color(renderer, hint)
+            sdl.RenderDrawRect(renderer, expand(dest, 4, 4))
+            sdl.RenderCopy(renderer, font.texture, &source, &dest)
+        }
     }
-    
 
+    for s, i in rows {
+        draw_key_row(renderer, font, s, key_hints[:], y + i32(i) * (font.height / font.glyphs_h * 4))
+    }
 }
 
 make_font :: proc(renderer: ^sdl.Renderer, filename: string) -> (Font, bool) {
@@ -332,7 +358,6 @@ handle_key :: proc(key: sdl.Keycode) {
             len -= 1
             letter[len] = 0
             hint[len] = .Unknown
-            fmt.printf("Removed element, result: {}\n", letter[:len])
         }
         return
     }
@@ -342,19 +367,22 @@ handle_key :: proc(key: sdl.Keycode) {
         letter[len] = char
         hint[len] = .Unknown
         len += 1
-        fmt.printf("Appending {}, result: {}\n", char, letter[:len])
     }
 
     if (key == .RETURN || key == .KP_ENTER) && len == WORD_LENGTH {
         if equals(answer, letter[:]) {
             victory = true
-        } else if is_in_word_list(letter[:]) /* || ALLOW_ANY_GUESS*/ {
+        } else if is_in_word_list(letter[:]) /* || ALLOW_ANY_GUESS */ {
             evaluate(current_guess)
-            fmt.printf("Adding guess: {}\n", letter[:len])
+
             num_guesses += 1
-            if num_guesses > NUM_GUESSES {
+            if num_guesses >= NUM_GUESSES {
                 num_guesses = NUM_GUESSES
+                failure = true
             }
+        } else {
+            current_guess.shake_start = frame_time
+            current_guess.shake_amplitude = SHAKE_AMPLITUDE
         }
     }
 }
@@ -386,13 +414,17 @@ main :: proc() {
 
     load_word_list()
 
-    window : ^sdl.Window
-    renderer : ^sdl.Renderer
-    flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
-    if sdl.CreateWindowAndRenderer(WINDOW_WIDTH, WINDOW_HEIGHT, flags, &window, &renderer) != 0 {
+    window_flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
+    window := sdl.CreateWindow("Odle - The Odin Wordle!", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, window_flags)
+    if window == nil {
         fatal_error("Unable to open window")
     }
-    sdl.SetWindowTitle(window, "Odle - The Odin Wordle!")
+    render_flags : sdl.RendererFlags = { .PRESENTVSYNC }
+    renderer := sdl.CreateRenderer(window, -1, render_flags)
+    if renderer == nil {
+        fatal_error("Unable to create renderer")
+    }
+
     defer sdl.DestroyWindow(window)
     defer sdl.DestroyRenderer(renderer)
 
@@ -401,9 +433,7 @@ main :: proc() {
         fatal_error("Unable to load font file")
     }
     defer sdl.DestroyTexture(font.texture)
-
     rng := rand.create(u64(time.now()._nsec))
-
     answer = word_list[rand.uint32(&rng) % cast(u32)len(word_list)]
 
     if false {
@@ -420,11 +450,15 @@ main :: proc() {
         }
     }
 
-    fmt.printf("The word is: {}\n", answer)
-
     running := true
+    start_time := time.now()
+    last_time := start_time
     for running {
         free_all(context.temp_allocator)
+        now := time.now()
+        frame_time = time.duration_seconds(time.diff(start_time, now))
+        dt = time.duration_seconds(time.diff(last_time, now))
+        last_time = now
 
         event: sdl.Event
         for sdl.PollEvent(&event) != 0 {
@@ -448,13 +482,21 @@ main :: proc() {
         }
         sdl.RenderClear(renderer)
 
+        glyph_width := font.width / font.glyphs_w
+        title := "ODLE"
+        draw_string(renderer, font, (WINDOW_WIDTH / 2.0) - (glyph_width * (cast(i32)len(title) / 2) * DRAW_STRING_SCALE), 30, title)
         for i in 0..<NUM_GUESSES {
-            draw_guess(renderer, font, 30 + cast(i32)i * 30, guesses[i])
+            draw_guess(renderer, font, 60 + cast(i32)i * 30, guesses[i])
+            if guesses[i].shake_amplitude > 0 {
+                guesses[i].shake_amplitude -= max((SHAKE_AMPLITUDE * dt) / SHAKE_DURATION, 0)
+            }
         }
-        //if num_guesses < NUM_GUESSES {
-        //    draw_guess(renderer, font, 30 + num_guesses * 30, guesses[num_guesses])
-        //}
-        draw_keys(renderer, font, 30 + (NUM_GUESSES + 1) * 30)
+        draw_keys(renderer, font, 70 + (NUM_GUESSES + 1) * 30)
+
+        if failure {
+            draw_string(renderer, font, 20, 50, "Oh no!")
+            draw_string(renderer, font, 20, 70, fmt.tprintf("It was {}", answer))
+        }
 
         sdl.RenderPresent(renderer)
     }
