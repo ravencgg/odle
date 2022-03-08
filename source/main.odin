@@ -420,7 +420,7 @@ load_word_list :: proc() {
         check := str.trim(s, " \r\n\t")
         if len(check) == WORD_LENGTH {
             append(&word_list, str.clone(check))
-        } else {
+        } else if len(check) > 0 {
             fmt.printf("Invalid word in list: {}\n", check)
         }
     }
