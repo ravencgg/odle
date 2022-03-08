@@ -6,6 +6,7 @@ import "core:intrinsics"
 import "core:math/rand"
 import "core:math"
 import "core:time"
+import "core:mem"
 
 import str "core:strings"
 import sdl "vendor:sdl2"
@@ -15,12 +16,17 @@ WORD_LENGTH :: 5
 NUM_GUESSES :: 6
 WINDOW_WIDTH  :: 640
 WINDOW_HEIGHT :: 480
-ALLOW_ANY_GUESS :: false 
+ALLOW_ANY_GUESS :: false
 DRAW_STRING_SCALE :: 2
 
 SHAKE_FREQUENCY :: 40
 SHAKE_AMPLITUDE :: 5.0
 SHAKE_DURATION :: 0.5
+
+Mode :: enum {
+    MENU,
+    GAME,
+}
 
 Font :: struct {
     texture: ^sdl.Texture,
@@ -44,14 +50,25 @@ Guess :: struct {
     shake_amplitude : f64,
 }
 
+font: Font
+renderer: ^sdl.Renderer
 word_list : [dynamic]string
+
 guesses : [NUM_GUESSES]Guess
 num_guesses : i32
 victory : bool
 failure : bool
 answer : string
+
+mode : Mode = .MENU
 dt : f64
 frame_time : f64
+
+hovered_button: string  // mouse is over
+active_button: string   // pressed
+next_hovered_button: string
+next_active_button: string
+
 
 fatal_error :: proc(message: string) {
     fmt.println("Fatal Error: ", message)
@@ -74,53 +91,56 @@ expand :: proc(r: sdl.Rect, w, h: i32) -> ^sdl.Rect {
     return result
 }
 
-draw_string :: proc(renderer: ^sdl.Renderer, font: Font, x, y: i32, s: string) {
+get_glyph :: proc(c: rune) -> ^sdl.Rect {
 
-    source: sdl.Rect
+    source := new(sdl.Rect, context.temp_allocator)
     source.w = font.width / font.glyphs_w
     source.h = font.height / font.glyphs_h
 
-    dest := source
-    dest.w *= DRAW_STRING_SCALE
-    dest.h *= DRAW_STRING_SCALE
+    index : i32 = cast(i32)c - cast(i32)' '
+    row := index / font.glyphs_w
+    col := index % font.glyphs_w
+    source.x = col * source.w
+    source.y = row * source.h
+
+    return source
+}
+
+draw_string :: proc(x, y: i32, s: string) {
+
+    dest: sdl.Rect
+    dest.w = (font.width / font.glyphs_w)  * DRAW_STRING_SCALE
+    dest.h = (font.height / font.glyphs_h) * DRAW_STRING_SCALE
     dest.x = x
     dest.y = y
 
     for c in s {
-        index : i32 = cast(i32)c - cast(i32)' '
-        row := index / font.glyphs_w
-        col := index % font.glyphs_w
-        source.x = col * source.w
-        source.y = row * source.h
-        sdl.RenderCopy(renderer, font.texture, &source, &dest)
+        sdl.RenderCopy(renderer, font.texture, get_glyph(c), &dest)
         dest.x += dest.w
     }
 }
 
-draw_runes :: proc(renderer: ^sdl.Renderer, font: Font, x, y: i32, s: []rune) {
+draw_string_centered :: proc(x, y: i32, s: string) {
+    glyph_width := font.width / font.glyphs_w
+    glyph_height := font.height / font.glyphs_h
+    draw_string(x - (glyph_width * cast(i32)len(s) * DRAW_STRING_SCALE) / 2, y - (glyph_height / 2) * DRAW_STRING_SCALE, s)
+}
 
-    source: sdl.Rect
-    source.w = font.width / font.glyphs_w
-    source.h = font.height / font.glyphs_h
+draw_runes :: proc(x, y: i32, s: []rune) {
 
-    dest := source
-    dest.w *= 3
-    dest.h *= 3
+    dest: sdl.Rect = ---
+    dest.w = (font.width / font.glyphs_w)  * 3
+    dest.h = (font.height / font.glyphs_h) * 3
     dest.x = x
     dest.y = y
 
     for c in s {
-        index : i32 = cast(i32)c - cast(i32)' '
-        row := index / font.glyphs_w
-        col := index % font.glyphs_w
-        source.x = col * source.w
-        source.y = row * source.h
-        sdl.RenderCopy(renderer, font.texture, &source, &dest)
+        sdl.RenderCopy(renderer, font.texture, get_glyph(c), &dest)
         dest.x += dest.w
     }
 }
 
-set_fill_color :: proc(renderer: ^sdl.Renderer, hint: Hint) {
+set_fill_color :: proc(hint: Hint) {
     switch (hint) {
     case .Unknown:    sdl.SetRenderDrawColor(renderer,  40,  40, 40, 255)
     case .Incorrect:  sdl.SetRenderDrawColor(renderer,  10,  10, 10, 255)
@@ -129,7 +149,7 @@ set_fill_color :: proc(renderer: ^sdl.Renderer, hint: Hint) {
     }
 }
 
-set_border_color :: proc(renderer: ^sdl.Renderer, hint: Hint) {
+set_border_color :: proc(hint: Hint) {
     switch (hint) {
     case .Unknown:    sdl.SetRenderDrawColor(renderer,  60,  60, 60, 255)
     case .Incorrect:  sdl.SetRenderDrawColor(renderer,  30,  30, 30, 255)
@@ -138,7 +158,7 @@ set_border_color :: proc(renderer: ^sdl.Renderer, hint: Hint) {
     }
 }
 
-draw_guess :: proc(renderer: ^sdl.Renderer, font: Font, y: i32, s: Guess) {
+draw_guess :: proc(y: i32, s: Guess) {
 
     source: sdl.Rect
     source.w = font.width / font.glyphs_w
@@ -167,17 +187,16 @@ draw_guess :: proc(renderer: ^sdl.Renderer, font: Font, y: i32, s: Guess) {
         source.x = col * source.w
         source.y = row * source.h
 
-        set_border_color(renderer, s.hint[i])
+        set_fill_color(s.hint[i])
         sdl.RenderFillRect(renderer, expand(dest, 4, 4))
-        set_fill_color(renderer, s.hint[i])
+        set_border_color(s.hint[i])
         sdl.RenderDrawRect(renderer, expand(dest, 4, 4))
         sdl.RenderCopy(renderer, font.texture, &source, &dest)
         dest.x += jump
     }
 }
 
-
-draw_keys :: proc(renderer: ^sdl.Renderer, font: Font, y: i32) {
+draw_keys :: proc(y: i32) {
 
     key_hints : [26]Hint
 
@@ -198,7 +217,6 @@ draw_keys :: proc(renderer: ^sdl.Renderer, font: Font, y: i32) {
     }
 
     SPACING :: 5
-
     rows : []string = { "qwertyuiop", "asdfghjkl", "zxcvbnm" };
 
     draw_key_row :: proc(renderer: ^sdl.Renderer, font: Font, s: string, hints: []Hint, y: i32) {
@@ -229,9 +247,9 @@ draw_keys :: proc(renderer: ^sdl.Renderer, font: Font, y: i32) {
             source.x = col * source.w
             source.y = row * source.h
 
-            set_fill_color(renderer, hint)
+            set_fill_color(hint)
             sdl.RenderFillRect(renderer, expand(dest, 4, 4))
-            set_border_color(renderer, hint)
+            set_border_color(hint)
             sdl.RenderDrawRect(renderer, expand(dest, 4, 4))
             sdl.RenderCopy(renderer, font.texture, &source, &dest)
         }
@@ -242,7 +260,7 @@ draw_keys :: proc(renderer: ^sdl.Renderer, font: Font, y: i32) {
     }
 }
 
-make_font :: proc(renderer: ^sdl.Renderer, filename: string) -> (Font, bool) {
+make_font :: proc(filename: string) -> (Font, bool) {
     c : i32 = 4
     w, h: i32
     data := stb.load(str.clone_to_cstring(filename), &w, &h, &c, 4)
@@ -341,12 +359,12 @@ evaluate :: proc(using guess: ^Guess) {
     }
 }
 
-handle_key :: proc(key: sdl.Keycode) {
+handle_key :: proc(key: sdl.Keycode, repeat: bool) {
 
     if victory {
         return
     }
-    
+
     if num_guesses >= NUM_GUESSES {
         return
     }
@@ -361,7 +379,7 @@ handle_key :: proc(key: sdl.Keycode) {
         }
         return
     }
-    
+
     if current_guess.len < WORD_LENGTH  && valid_letter(key) {
         char := cast(rune)key
         letter[len] = char
@@ -381,8 +399,10 @@ handle_key :: proc(key: sdl.Keycode) {
                 failure = true
             }
         } else {
-            current_guess.shake_start = frame_time
-            current_guess.shake_amplitude = SHAKE_AMPLITUDE
+            if !repeat {
+                shake_start = frame_time
+                shake_amplitude = SHAKE_AMPLITUDE
+            }
         }
     }
 }
@@ -410,17 +430,83 @@ load_word_list :: proc() {
     }
 }
 
+rect_center :: proc(r: sdl.Rect) -> (i32, i32) {
+    x := r.x + r.w / 2
+    y := r.y + r.h / 2
+    return x, y
+}
+
+mouse_state :: proc() -> (pressed: bool, x, y: i32) {
+
+    mx, my: i32
+    button_state := sdl.GetMouseState(&mx, &my)
+    return (button_state & 1 != 0), mx, my
+}
+
+contains :: proc(r: sdl.Rect, x, y: i32) -> bool {
+    return x > r.x && x < r.x + r.w && y > r.y && y < r.y + r.h
+}
+
+button :: proc(text: string, r: sdl.Rect) -> bool {
+    pressed, mx, my := mouse_state()
+    is_hovered := contains(r, mx, my)
+    result := false
+
+    rect := r
+    if active_button == text {
+        sdl.SetRenderDrawColor(renderer,  80,  80, 80, 255)
+        sdl.RenderFillRect(renderer, &rect)
+        sdl.SetRenderDrawColor(renderer,  99,  99, 99, 255)
+        sdl.RenderDrawRect(renderer, &rect)
+
+        result = is_hovered && pressed == false
+
+    } else if hovered_button == text {
+        sdl.SetRenderDrawColor(renderer,  50,  50, 50, 255)
+        sdl.RenderFillRect(renderer, &rect)
+        sdl.SetRenderDrawColor(renderer,  70,  70, 70, 255)
+        sdl.RenderDrawRect(renderer, &rect)
+    } else {
+        sdl.SetRenderDrawColor(renderer,  30,  30, 30, 255)
+        sdl.RenderFillRect(renderer, &rect)
+        sdl.SetRenderDrawColor(renderer,  50,  50, 50, 255)
+        sdl.RenderDrawRect(renderer, &rect)
+    }
+
+    if is_hovered {
+        if pressed {
+            next_active_button = text
+        }
+        next_hovered_button = text
+    }
+
+    tx, ty := rect_center(r)
+    draw_string_centered(tx, ty, text)
+
+    return result
+}
+
+start_game :: proc() {
+    mem.zero_item(&guesses)
+    num_guesses = 0
+    victory = false
+    failure = false
+
+    rng := rand.create(u64(time.now()._nsec))
+    answer = word_list[rand.uint32(&rng) % cast(u32)len(word_list)]
+
+    mode = .GAME
+}
+
 main :: proc() {
-
     load_word_list()
-
     window_flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
     window := sdl.CreateWindow("Odle - The Odin Wordle!", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, window_flags)
     if window == nil {
         fatal_error("Unable to open window")
     }
     render_flags : sdl.RendererFlags = { .PRESENTVSYNC }
-    renderer := sdl.CreateRenderer(window, -1, render_flags)
+    renderer = sdl.CreateRenderer(window, -1, render_flags)
     if renderer == nil {
         fatal_error("Unable to create renderer")
     }
@@ -428,13 +514,12 @@ main :: proc() {
     defer sdl.DestroyWindow(window)
     defer sdl.DestroyRenderer(renderer)
 
-    font, font_created := make_font(renderer, "font.png")
+    new_font, font_created := make_font("font.png")
+    font = new_font
     if !font_created {
         fatal_error("Unable to load font file")
     }
     defer sdl.DestroyTexture(font.texture)
-    rng := rand.create(u64(time.now()._nsec))
-    answer = word_list[rand.uint32(&rng) % cast(u32)len(word_list)]
 
     if false {
         answer = "baabd"
@@ -450,6 +535,7 @@ main :: proc() {
         }
     }
 
+    mode = .MENU
     running := true
     start_time := time.now()
     last_time := start_time
@@ -459,6 +545,11 @@ main :: proc() {
         frame_time = time.duration_seconds(time.diff(start_time, now))
         dt = time.duration_seconds(time.diff(last_time, now))
         last_time = now
+
+        active_button = next_active_button
+        hovered_button = next_hovered_button
+        next_active_button = ""
+        next_hovered_button = ""
 
         event: sdl.Event
         for sdl.PollEvent(&event) != 0 {
@@ -471,31 +562,60 @@ main :: proc() {
 
                 case .KEYDOWN: {
                     key := event.key.keysym.sym
-                    handle_key(key)
+                    handle_key(key, cast(bool)event.key.repeat)
                 }
             }
         }
 
-        sdl.SetRenderDrawColor(renderer, 10, 10, 10, 255)
-        if victory {
-            sdl.SetRenderDrawColor(renderer, 10, 200, 10, 255)
-        }
-        sdl.RenderClear(renderer)
-
-        glyph_width := font.width / font.glyphs_w
-        title := "ODLE"
-        draw_string(renderer, font, (WINDOW_WIDTH / 2.0) - (glyph_width * (cast(i32)len(title) / 2) * DRAW_STRING_SCALE), 30, title)
-        for i in 0..<NUM_GUESSES {
-            draw_guess(renderer, font, 60 + cast(i32)i * 30, guesses[i])
-            if guesses[i].shake_amplitude > 0 {
-                guesses[i].shake_amplitude -= max((SHAKE_AMPLITUDE * dt) / SHAKE_DURATION, 0)
+        if mode == .MENU {
+            sdl.SetRenderDrawColor(renderer, 10, 10, 10, 255)
+            if victory {
+                sdl.SetRenderDrawColor(renderer, 10, 200, 10, 255)
             }
-        }
-        draw_keys(renderer, font, 70 + (NUM_GUESSES + 1) * 30)
+            sdl.RenderClear(renderer)
 
-        if failure {
-            draw_string(renderer, font, 20, 50, "Oh no!")
-            draw_string(renderer, font, 20, 70, fmt.tprintf("It was {}", answer))
+            draw_string_centered(WINDOW_WIDTH / 2, 100, "ODLE")
+            if button("Play", sdl.Rect{WINDOW_WIDTH / 2 - 50, 200, 100, 30}) {
+                start_game()
+            }
+            if button("Quit", sdl.Rect{WINDOW_WIDTH / 2 - 50, 250, 100, 30}) {
+                running = false
+            }
+
+        } else {
+            sdl.SetRenderDrawColor(renderer, 10, 10, 10, 255)
+            if victory {
+                sdl.SetRenderDrawColor(renderer, 10, 200, 10, 255)
+            }
+            sdl.RenderClear(renderer)
+
+            draw_string_centered((WINDOW_WIDTH / 2.0), 30, "ODLE")
+            for i in 0..<NUM_GUESSES {
+                draw_guess(60 + cast(i32)i * 30, guesses[i])
+                if guesses[i].shake_amplitude > 0 {
+                    guesses[i].shake_amplitude -= max((SHAKE_AMPLITUDE * dt) / SHAKE_DURATION, 0)
+                }
+            }
+            draw_keys(70 + (NUM_GUESSES + 1) * 30)
+
+            if failure {
+                draw_string(20, 150, "Oh no!")
+                draw_string(20, 180, fmt.tprintf("It was {}", answer))
+            }
+
+            if failure || victory {
+                if button("Menu", sdl.Rect{10, 10, 120, 30}) {
+                    victory = false
+                    failure = false
+                    mode = .MENU
+                }
+                if button("Restart", sdl.Rect{10, 50, 120, 30}) {
+                    start_game()
+                }
+                if button("Quit", sdl.Rect{10, 90, 120, 30}) {
+                    running = false
+                }
+            }
         }
 
         sdl.RenderPresent(renderer)
