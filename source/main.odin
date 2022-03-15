@@ -162,7 +162,7 @@ draw_guess :: proc(y: i32, s: Guess) {
     dest.w = font.width / font.glyphs_w * DRAW_GUESS_SCALE
     dest.h = font.height / font.glyphs_h * DRAW_GUESS_SCALE
 
-    SPACING :: 2 * DRAW_GUESS_SCALE
+    SPACING :: 1 * DRAW_GUESS_SCALE
     jump := dest.w + SPACING
     total_width := WORD_LENGTH * dest.w + SPACING * (WORD_LENGTH - 1)
 
@@ -226,7 +226,7 @@ draw_keys :: proc(y: i32) {
 
             button_string := s[i:i+1]
             brightness : u8 = 0
-            pressed, mx, my := mouse_state()
+            _, mx, my := mouse_state()
             is_hovered := contains(dest, mx, my)
             if active_button == button_string {
                 brightness = 20
@@ -299,6 +299,9 @@ load_font :: proc() {
     font.glyphs_h = 7
 
     success := sdl.UpdateTexture(font.texture, nil, data, w * 4) == 0
+    if !success {
+        fatal_error("Unable to update font texture")
+    }
     sdl.SetTextureBlendMode(font.texture, sdl.BlendMode.BLEND)
 }
 
@@ -307,7 +310,6 @@ valid_letter :: proc(key: sdl.Keycode) -> bool {
 }
 
 equals :: proc(str: string, runes: []rune) -> bool {
-    match := true
     for c, i in str {
         if c != runes[i] {
             return false
@@ -477,7 +479,7 @@ button_behavior :: proc(text: string, r: sdl.Rect) -> bool {
 
 button :: proc(text: string, r: sdl.Rect) -> bool {
     result := button_behavior(text, r)
-    pressed, mx, my := mouse_state()
+    _, mx, my := mouse_state()
     is_hovered := contains(r, mx, my)
     rect := r
     if active_button == text {
@@ -530,8 +532,6 @@ start_game :: proc() {
 }
 
 main :: proc() {
-    fmt.println("Hello world")
-
     window_flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
     window := sdl.CreateWindow("Odle - The Odin Wordle!", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, window_flags)
     if window == nil {
