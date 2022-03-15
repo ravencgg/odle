@@ -13,7 +13,7 @@ import sdl "vendor:sdl2"
 import stb "vendor:stb/image"
 
 WORD_LENGTH :: 5
-NUM_GUESSES :: 6
+MAX_GUESSES :: 7
 WINDOW_WIDTH  :: 1000
 WINDOW_HEIGHT :: 800
 ALLOW_ANY_GUESS :: false
@@ -27,7 +27,13 @@ SHAKE_DURATION :: 0.5
 
 Mode :: enum {
     MENU,
+    OPTIONS,
     GAME,
+}
+
+Options :: struct {
+    num_guesses: i32,
+    allow_any_guess: bool,
 }
 
 Font :: struct {
@@ -52,11 +58,12 @@ Guess :: struct {
     shake_amplitude : f64,
 }
 
+options := default_options()
 font: Font
 renderer: ^sdl.Renderer
 word_list : [dynamic]string
 
-guesses : [NUM_GUESSES]Guess
+guesses : [MAX_GUESSES]Guess
 num_guesses : i32
 victory : bool
 failure : bool
@@ -184,7 +191,7 @@ draw_guess :: proc(y: i32, s: Guess) {
     }
 }
 
-draw_keys :: proc(y: i32) {
+draw_keys :: proc() {
 
     key_hints : [26]Hint
 
@@ -249,7 +256,7 @@ draw_keys :: proc(y: i32) {
     y_offset :: proc(row: i32) -> i32 {
         return (row + 5) * (((font.height / font.glyphs_h) + 3) * DRAW_KEYS_SCALE)
     }
-
+    y := WINDOW_HEIGHT - (y_offset(4) + 30)
     for s, i in rows {
         draw_key_row(renderer, font, s, key_hints[:], y + y_offset(cast(i32)i))
     }
@@ -381,7 +388,7 @@ handle_key :: proc(key: sdl.Keycode, repeat: bool) {
         return
     }
 
-    if num_guesses >= NUM_GUESSES {
+    if num_guesses >= options.num_guesses {
         return
     }
 
@@ -403,21 +410,31 @@ handle_key :: proc(key: sdl.Keycode, repeat: bool) {
         len += 1
     }
 
-    if (key == .RETURN || key == .KP_ENTER) && len == WORD_LENGTH {
-        if equals(answer, letter[:]) {
-            victory = true
-        } else if is_in_word_list(letter[:]) /* || ALLOW_ANY_GUESS */ {
-            evaluate(current_guess)
+    start_shake :: proc(using guess: ^Guess) {
+        shake_start = frame_time
+        shake_amplitude = SHAKE_AMPLITUDE
+    }
 
-            num_guesses += 1
-            if num_guesses >= NUM_GUESSES {
-                num_guesses = NUM_GUESSES
-                failure = true
+    if (key == .RETURN || key == .KP_ENTER) {
+        if len == WORD_LENGTH {
+            if equals(answer, letter[:]) {
+                victory = true
+            } else if is_in_word_list(letter[:]) || options.allow_any_guess {
+                evaluate(current_guess)
+
+                num_guesses += 1
+                if num_guesses >= options.num_guesses {
+                    num_guesses = options.num_guesses
+                    failure = true
+                }
+            } else {
+                if !repeat {
+                    start_shake(current_guess)
+                }
             }
         } else {
             if !repeat {
-                shake_start = frame_time
-                shake_amplitude = SHAKE_AMPLITUDE
+                start_shake(current_guess)
             }
         }
     }
@@ -526,10 +543,22 @@ start_game :: proc() {
         rng := rand.create(u64(time.now()._nsec))
         answer = word_list[rand.uint32(&rng) % cast(u32)len(word_list)]
     }
-
-
     mode = .GAME
 }
+
+return_to_menu :: proc() {
+    victory = false
+    failure = false
+    mode = .MENU
+}
+
+default_options :: proc() -> Options {
+    using options: Options
+    num_guesses = 6
+    allow_any_guess = false
+    return options
+}
+
 
 main :: proc() {
     window_flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
@@ -587,13 +616,49 @@ main :: proc() {
             }
             sdl.RenderClear(renderer)
 
+            button_width : i32 = 200
+            centered_x : i32 = WINDOW_WIDTH / 2 - button_width / 2
+
             draw_string_centered(WINDOW_WIDTH / 2, 100, "ODLE")
-            if button("Play", sdl.Rect{WINDOW_WIDTH / 2 - 50, 400, 120, 50}) {
+            if button("Play", sdl.Rect{centered_x, 400, button_width, 50}) {
                 start_game()
             }
-            if button("Quit", sdl.Rect{WINDOW_WIDTH / 2 - 50, 480, 120, 50}) {
+            if button("Options", sdl.Rect{centered_x, 480, button_width, 50}) {
+                mode = .OPTIONS
+            }
+            if button("Quit", sdl.Rect{centered_x, 560, button_width, 50}) {
                 running = false
             }
+
+        } else if mode == .OPTIONS {
+
+            sdl.SetRenderDrawColor(renderer, 10, 10, 10, 255)
+            if victory {
+                sdl.SetRenderDrawColor(renderer, 10, 200, 10, 255)
+            }
+            sdl.RenderClear(renderer)
+
+            draw_string_centered(WINDOW_WIDTH / 2, 100, "ODLE")
+
+            if button(fmt.tprintf("Allow any guess: {}", options.allow_any_guess), sdl.Rect{WINDOW_WIDTH / 2 - 250, 400, 500, 50}) {
+                options.allow_any_guess = !options.allow_any_guess
+            }
+
+            if button(fmt.tprintf("Number of guesses: {}", options.num_guesses), sdl.Rect{WINDOW_WIDTH / 2 - 250, 480, 500, 50}) {
+                options.num_guesses += 1
+                if options.num_guesses > MAX_GUESSES {
+                    options.num_guesses = 2
+                }
+            }
+
+            if button("Save", sdl.Rect{WINDOW_WIDTH / 2 + 10, 560, 200, 50}) {
+                mode = .MENU
+            }
+
+            if button("Default", sdl.Rect{WINDOW_WIDTH / 2 - 210, 560, 200, 50}) {
+                options = default_options()
+            }
+
 
         } else {
             sdl.SetRenderDrawColor(renderer, 10, 10, 10, 255)
@@ -603,13 +668,13 @@ main :: proc() {
             sdl.RenderClear(renderer)
 
             draw_string_centered((WINDOW_WIDTH / 2.0), 30, "ODLE")
-            for i in 0..<NUM_GUESSES {
+            for i in 0..<options.num_guesses {
                 draw_guess(60 + cast(i32)i * 10 * DRAW_GUESS_SCALE, guesses[i])
                 if guesses[i].shake_amplitude > 0 {
                     guesses[i].shake_amplitude -= max((SHAKE_AMPLITUDE * dt) / SHAKE_DURATION, 0)
                 }
             }
-            draw_keys((NUM_GUESSES + 1) * 30)
+            draw_keys()
 
             if failure {
                 draw_string(20, 300, "Oh no!")
@@ -618,9 +683,7 @@ main :: proc() {
 
             if failure || victory {
                 if button("Menu", sdl.Rect{10, 10, 200, 50}) {
-                    victory = false
-                    failure = false
-                    mode = .MENU
+                    return_to_menu()
                 }
                 if button("Restart", sdl.Rect{10, 80, 200, 50}) {
                     start_game()
@@ -628,7 +691,13 @@ main :: proc() {
                 if button("Quit", sdl.Rect{10, 150, 200, 50}) {
                     running = false
                 }
+            } else {
+                if button("Menu", sdl.Rect{10, 10, 120, 40}) {
+                    return_to_menu()
+                }
             }
+
+
         }
 
         sdl.RenderPresent(renderer)
