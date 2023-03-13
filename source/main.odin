@@ -58,7 +58,7 @@ Guess :: struct {
     shake_amplitude : f64,
 }
 
-options := default_options()
+options : Options
 font: Font
 renderer: ^sdl.Renderer
 word_list : [dynamic]string
@@ -443,7 +443,7 @@ handle_key :: proc(key: sdl.Keycode, repeat: bool) {
 
 load_word_list :: proc() {
     data := #load("../word_list.txt")
-    as_string := cast(string) data
+    as_string := transmute(string) data
     strings := str.split(as_string, "\n", context.temp_allocator)
 
     for s in strings {
@@ -552,13 +552,11 @@ return_to_menu :: proc() {
     mode = .MENU
 }
 
-default_options :: proc() -> Options {
-    using options: Options
+set_default_options :: proc() {
+    using options
     num_guesses = 6
     allow_any_guess = false
-    return options
 }
-
 
 main :: proc() {
     window_flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
@@ -574,6 +572,7 @@ main :: proc() {
 
     load_word_list()
     load_font()
+    set_default_options()
 
     defer sdl.DestroyWindow(window)
     defer sdl.DestroyRenderer(renderer)
@@ -594,7 +593,7 @@ main :: proc() {
         next_active_button = ""
 
         event: sdl.Event
-        for sdl.PollEvent(&event) != 0 {
+        for sdl.PollEvent(&event) != false {
 
             #partial switch(event.type) {
                 case .QUIT: {
@@ -656,7 +655,7 @@ main :: proc() {
             }
 
             if button("Default", sdl.Rect{WINDOW_WIDTH / 2 - 210, 560, 200, 50}) {
-                options = default_options()
+                set_default_options()
             }
 
 
