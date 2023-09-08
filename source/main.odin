@@ -7,6 +7,9 @@ import "core:math/rand"
 import "core:math"
 import "core:time"
 import "core:mem"
+import "core:encoding/json"
+
+// import "core:io"
 
 import str "core:strings"
 import sdl "vendor:sdl2"
@@ -62,6 +65,72 @@ options : Options
 font: Font
 renderer: ^sdl.Renderer
 word_list : [dynamic]string
+
+save_options :: proc(options: ^Options) -> os.Errno
+{
+    builder: str.Builder
+    ser_options: json.Marshal_Options
+    ser_options.pretty = true
+    ser_options.use_spaces = true
+
+    error := json.marshal_to_builder(&builder, options^, &ser_options)
+    if error == .Unsupported_Type {
+        fmt.printf("Serialize error: {}\n", error)
+        return 0
+    }
+
+    fmt.printf("Options: {}\n", str.to_string(builder))
+    file, err := os.open("options.json", os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0666)
+    if err != os.ERROR_NONE {
+        fmt.printf("File error: {}\n", err)
+        return err
+    }
+    defer os.close(file)
+    os.write_string(file, str.to_string(builder))
+
+    return 0
+}
+
+set_default_options :: proc()
+{
+    using options
+    num_guesses = 6
+    allow_any_guess = false
+}
+
+load_options :: proc() -> bool
+{
+    set_default_options()
+
+    file, err := os.open("options.json", os.O_RDONLY, 0)
+    if err != os.ERROR_NONE {
+        fmt.printf("load_options: File error {}", err)
+        return false
+    }
+    defer os.close(file)
+
+    buffer, success := os.read_entire_file(file)
+    if !success {
+        fmt.println("Failed to read file")
+        return false
+    }
+
+    ser_err := json.unmarshal_any(buffer, &options)
+    switch e in ser_err {
+    case json.Error:
+        fmt.printf("What in unknown error\n");
+        return false
+    case json.Unmarshal_Data_Error:
+        fmt.printf("What in data error\n");
+        return false
+    case json.Unsupported_Type_Error:
+        fmt.printf("What in type error\n");
+        return false
+    }
+
+    fmt.printf("Loaded options: {}\n", options)
+    return true
+}
 
 guesses : [MAX_GUESSES]Guess
 num_guesses : i32
@@ -552,13 +621,10 @@ return_to_menu :: proc() {
     mode = .MENU
 }
 
-set_default_options :: proc() {
-    using options
-    num_guesses = 6
-    allow_any_guess = false
-}
+main :: proc()
+{
+    load_options()
 
-main :: proc() {
     window_flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
     window := sdl.CreateWindow("Odle - The Odin Wordle!", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, window_flags)
     if window == nil {
@@ -572,7 +638,6 @@ main :: proc() {
 
     load_word_list()
     load_font()
-    set_default_options()
 
     defer sdl.DestroyWindow(window)
     defer sdl.DestroyRenderer(renderer)
@@ -594,17 +659,16 @@ main :: proc() {
 
         event: sdl.Event
         for sdl.PollEvent(&event) != false {
-
             #partial switch(event.type) {
-                case .QUIT: {
-                    running = false
-                    break
-                }
+            case .QUIT: {
+                running = false
+                break
+            }
 
-                case .KEYDOWN: {
-                    key := event.key.keysym.sym
-                    handle_key(key, cast(bool)event.key.repeat)
-                }
+            case .KEYDOWN: {
+                key := event.key.keysym.sym
+                handle_key(key, cast(bool)event.key.repeat)
+            }
             }
         }
 
@@ -651,6 +715,7 @@ main :: proc() {
             }
 
             if button("Save", sdl.Rect{WINDOW_WIDTH / 2 + 10, 560, 200, 50}) {
+                save_options(&options)
                 mode = .MENU
             }
 
@@ -695,8 +760,6 @@ main :: proc() {
                     return_to_menu()
                 }
             }
-
-
         }
 
         sdl.RenderPresent(renderer)
