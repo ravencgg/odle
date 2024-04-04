@@ -1,2 +1,9 @@
 *.exe
 *.ll
+*.vs
+
+*.pdb
+*.raddbg
+*.raddbgi
+options.json
+

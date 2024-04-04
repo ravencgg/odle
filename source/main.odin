@@ -91,13 +91,6 @@ save_options :: proc(options: ^Options) -> os.Errno
     return 0
 }
 
-set_default_options :: proc()
-{
-    using options
-    num_guesses = 6
-    allow_any_guess = false
-}
-
 load_options :: proc() -> bool
 {
     set_default_options()
@@ -621,10 +614,14 @@ return_to_menu :: proc() {
     mode = .MENU
 }
 
+set_default_options :: proc() {
+    options.num_guesses = 6
+    options.allow_any_guess = false
+}
+
 main :: proc()
 {
     load_options()
-
     window_flags : sdl.WindowFlags = { .INPUT_FOCUS, .ALLOW_HIGHDPI }
     window := sdl.CreateWindow("Odle - The Odin Wordle!", sdl.WINDOWPOS_CENTERED, sdl.WINDOWPOS_CENTERED, WINDOW_WIDTH, WINDOW_HEIGHT, window_flags)
     if window == nil {
@@ -742,7 +739,7 @@ main :: proc()
 
             if failure {
                 draw_string(20, 300, "Oh no!")
-                draw_string(20, 350, fmt.tprintf("It was {}", answer))
+                draw_string(20, 350, fmt.tprintf("It was '{}'", answer))
             }
 
             if failure || victory {
