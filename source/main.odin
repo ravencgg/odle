@@ -1,8 +1,8 @@
 package odle
 
+import "base:intrinsics"
 import "core:fmt"
 import "core:os"
-import "core:intrinsics"
 import "core:math/rand"
 import "core:math"
 import "core:time"
@@ -354,12 +354,12 @@ load_font :: proc() {
     }
     pixels : [^]ByteColor = cast(^ByteColor)data
     p := pixels[0:w*h]
-    for pixel in &p {
+    for &pixel in p {
         if pixel.r == 0 do pixel.a = 0
     }
 
-    format : u32 = auto_cast sdl.PixelFormatEnum.RGBA32
-    access := auto_cast sdl.TextureAccess.STREAMING
+    format := sdl.PixelFormatEnum.RGBA32
+    access := sdl.TextureAccess.STREAMING
 
     font.texture = sdl.CreateTexture(renderer, format, access, w, h)
     font.width = w
@@ -430,7 +430,7 @@ evaluate :: proc(using guess: ^Guess) {
         }
     }
 
-    for h in &hint {
+    for &h in hint {
         if h == .Unknown {
             h = .Incorrect
         }
@@ -602,8 +602,9 @@ start_game :: proc() {
             append(&word_list, answer)
         }
     } else {
-        rng := rand.create(u64(time.now()._nsec))
-        answer = word_list[rand.uint32(&rng) % cast(u32)len(word_list)]
+        rand.reset(u64(time.now()._nsec), context.random_generator)
+        index := rand.uint32(context.random_generator) % cast(u32)len(word_list)
+        answer = word_list[index]
     }
     mode = .GAME
 }
